@@ -1,0 +1,14 @@
+[project]
+name = "moleinsert"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "ipympl>=0.9.7",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.1",
+    "py3dmol>=2.4.2",
+    "rdkit>=2024.9.6",
+    "scikit-learn>=1.6.1",
+]
