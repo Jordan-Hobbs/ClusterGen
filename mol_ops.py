@@ -45,17 +45,15 @@ def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
 
     return mol_min
 
-def build_cluster(mol, n_mols, radius=6.0, min_dist=3, max_attempts=1000):
-
-    mols = [mol]
-    existing_coords = list(mol.GetConformer().GetPositions())
-
+def place_ring(mol, mols, existing_coords, radius, n_mols, 
+               min_dist=2.5, max_attempts=1000):
+    
     for i in range(n_mols):
         for attempt in range(max_attempts):
-            angle_deg = i * 360/n_mols
+            angle_deg = (i * 360 / n_mols)
             angle_rad = np.radians(angle_deg)
-            dx = radius * np.cos(angle_rad) + random.uniform(-2, 2)
-            dy = radius * np.sin(angle_rad) + random.uniform(-2, 2)
+            dx = radius * np.cos(angle_rad) + random.uniform(-1, 1)
+            dy = radius * np.sin(angle_rad) + random.uniform(-1, 1)
             dz = random.uniform(-3, 3)
             tilt = random.uniform(0, 10)
             
@@ -66,7 +64,6 @@ def build_cluster(mol, n_mols, radius=6.0, min_dist=3, max_attempts=1000):
 
             new_coords = list(translated.GetConformer().GetPositions())
 
-            # Check for overlaps
             too_close = any(
                 np.linalg.norm(pos1 - pos2) < min_dist
                 for pos1 in new_coords
@@ -78,7 +75,22 @@ def build_cluster(mol, n_mols, radius=6.0, min_dist=3, max_attempts=1000):
                 existing_coords.extend(new_coords)
                 break
         else:
-            print(f"Warning: Could not place molecule {i+1} without overlap.")
+            return False
+    return True
+
+def build_cluster_hex_rings(
+    mol, num_rings=1, r_start=6.0, r_step=6.0, min_dist=3, max_attempts=1000
+    ):
+    mols = [mol]
+    existing_coords = list(mol.GetConformer().GetPositions())
+
+    for ring in range(1, num_rings + 1):
+        n_mols = 6 * ring
+        radius = r_start + (ring - 1) * r_step
+        if not place_ring(
+            mol, mols, existing_coords, radius, n_mols, min_dist=min_dist, 
+            max_attempts=max_attempts
+        ):
             return None
 
     combined = mols[0]
