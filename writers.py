@@ -51,7 +51,8 @@ def write_toml(file_name, num_cpus=4, optlevel="extreme", gfn_method="gfnff"):
         f"optlev = \"{optlevel}\"\n"
         "\n"
         "[[calculation.level]]\n"
-        f"method = \"{gfn_method}\""
+        f"method = \"{gfn_method}\"\n"
+        f"calcspace = \"{file_name}\""
     )
 
     toml_name = f"{file_name}.toml"
