@@ -1,21 +1,19 @@
 import numpy as np
-from numpy.linalg import norm
+
 from sklearn.decomposition import PCA
-from rdkit import Chem
 from rdkit.Geometry import Point3D
 
 def orientate_rod(molecule):
     conf = molecule.GetConformer()
     xyz_pos = conf.GetPositions()
-    mean = xyz_pos.mean(axis=0)
-    centered = xyz_pos - mean
+    centered = xyz_pos - xyz_pos.mean(axis=0)
 
     pca = PCA(n_components=3)
     pca.fit(centered)
     rod_axis = pca.components_[0]
     z_axis = np.array([0, 0, 1])
 
-    a, b = (rod_axis / norm(rod_axis)).reshape(3), (z_axis / norm(z_axis)).reshape(3)
+    a, b = (rod_axis / np.linalg.norm(rod_axis)).reshape(3), (z_axis / np.linalg.norm(z_axis)).reshape(3)
     v = np.cross(a, b)
     c = np.dot(a, b)
     s = np.linalg.norm(v)
@@ -30,7 +28,6 @@ def orientate_rod(molecule):
     return molecule
 
 def translate_mol(molecule, dx=0, dy=0, dz=0):
-    molecule = Chem.Mol(molecule)
     conf = molecule.GetConformer()
     for i in range(molecule.GetNumAtoms()):
         pos = conf.GetAtomPosition(i)
@@ -38,7 +35,6 @@ def translate_mol(molecule, dx=0, dy=0, dz=0):
     return molecule
 
 def rotate_mol(molecule, angle_deg):
-    molecule = Chem.Mol(molecule)
     conf = molecule.GetConformer()
     angle_rad = np.radians(angle_deg)
     cos_angle = np.cos(angle_rad)
@@ -61,7 +57,7 @@ def tilt_mol(molecule, tilt_angle):
 
     tilt_axis = np.array([np.cos(azimuth), np.sin(azimuth), 0.0])
 
-    v = tilt_axis / norm(tilt_axis)
+    v = tilt_axis / np.linalg.norm(tilt_axis)
     s = np.sin(tilt_angle_rad)
     c = np.cos(tilt_angle_rad)
     kmat = np.array([
@@ -75,4 +71,13 @@ def tilt_mol(molecule, tilt_angle):
         pos = np.array(conf.GetAtomPosition(i)) - mean
         rotated = rotation_matrix @ pos + mean
         conf.SetAtomPosition(i, rotated)
+    return molecule
+
+def flip_mol(molecule):
+    conf = molecule.GetConformer()
+
+    for i in range(molecule.GetNumAtoms()):
+        pos = conf.GetAtomPosition(i)
+        flipped_pos = Point3D(pos.x, pos.y, -pos.z)
+        conf.SetAtomPosition(i, flipped_pos)
     return molecule
