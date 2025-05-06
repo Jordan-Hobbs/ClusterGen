@@ -14,7 +14,23 @@ def write_xyz(molecule, file_name, zipf):
     file_content = "\n".join(lines)
     zipf.writestr(f"{file_name}.xyz", file_content)
 
-def write_sh(num_jobs, zipf, job_name="cluster_opt", run_time="24:00:00", num_cpus=4, email="j.l.hobbs@leeds.ac.uk"):
+def write_toml(file_name, zipf, num_cpus, optlevel, gfn_method):
+    toml_text = (
+        "# CREST 3 input file\n"
+        "input = \"molecule.xyz\"\n"
+        f"ensemble_input=\"{file_name}.xyz\"\n"
+        "runtype = \"ancopt_ensemble\"\n"
+        f"threads = {num_cpus}\n"
+        "\n"
+        "[calculation]\n"
+        f"optlev = \"{optlevel}\"\n"
+        "\n"
+        "[[calculation.level]]\n"
+        f"method = \"{gfn_method}\""
+    )
+    zipf.writestr(f"{file_name}.toml", toml_text)
+
+def write_sh(num_jobs, zipf, job_name, run_time, num_cpus, email):
     sh_text = (
         "#!/bin/bash\n"
         f"#SBATCH --job-name={job_name}\n"
@@ -35,7 +51,7 @@ def write_sh(num_jobs, zipf, job_name="cluster_opt", run_time="24:00:00", num_cp
         "cd cluster_job_${SLURM_ARRAY_TASK_ID}\n"
         ""
         "# Copy input files\n"
-        "cp \"../cluster_${SLURM_ARRAY_TASK_ID}.toml\" \"../cluster_${SLURM_ARRAY_TASK_ID}.xyz\" \"../molecule.xyz\"\n"
+        "cp \"../cluster_${SLURM_ARRAY_TASK_ID}.toml\" \"../cluster_${SLURM_ARRAY_TASK_ID}.xyz\" \"../molecule.xyz\" .\n"
         "\n"
         "# Run calculation\n"
         "crest cluster_${SLURM_ARRAY_TASK_ID}.toml > cluster_${SLURM_ARRAY_TASK_ID}.out\n"
@@ -54,19 +70,3 @@ def write_sh(num_jobs, zipf, job_name="cluster_opt", run_time="24:00:00", num_cp
         "fi"
     )
     zipf.writestr(f"{job_name}.sh", sh_text)
-
-def write_toml(file_name, zipf, num_cpus=4, optlevel="extreme", gfn_method="gfnff"):
-    toml_text = (
-        "# CREST 3 input file\n"
-        "input = \"molecule.xyz\"\n"
-        f"ensemble_input=\"{file_name}.xyz\"\n"
-        "runtype = \"ancopt_ensemble\"\n"
-        f"threads = {num_cpus}\n"
-        "\n"
-        "[calculation]\n"
-        f"optlev = \"{optlevel}\"\n"
-        "\n"
-        "[[calculation.level]]\n"
-        f"method = \"{gfn_method}\""
-    )
-    zipf.writestr(f"{file_name}.toml", toml_text)

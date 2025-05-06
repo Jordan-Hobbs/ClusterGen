@@ -1,16 +1,82 @@
-import numpy as np
+import zipfile
+import sys
+import gc
 
+import numpy as np
+import scipy
 from rdkit import Chem
 from rdkit.Chem import rdDistGeom, rdForceFieldHelpers
 
 import geom_ops
+import writers
+
+
+def cluster_gen(args):
+    total_attempts = 0
+
+    smiles = args.SmilesString
+    mol = find_min_conformer(smiles, num_conf=args.RDNumConf)
+    mol = geom_ops.orientate_rod(mol)
+
+    with zipfile.ZipFile(args.Output, "w") as zipf:
+        writers.write_xyz(mol, "molecule", zipf=zipf)
+
+        for i in range(args.NumClusters):
+            print(f"Generating cluster {i+1}...")
+
+            attempts = 0
+            while True:
+                mol_cluster = build_cluster_hex_rings(
+                    mol,
+                    num_rings=args.NumRings,
+                    min_dist=args.MinSep,
+                    r_start=args.MolSep,
+                    r_step=args.MolSep,
+                    num_ap=args.NumAP,
+                )
+                attempts += 1
+                total_attempts += 1
+
+                if mol_cluster is not None:
+                    break
+
+                sys.stdout.write(f"\rCluster {i+1}: {attempts} attempt(s) so far...")
+                sys.stdout.flush()
+
+            print(f"Cluster {i+1} generated after {attempts} attempt(s).")
+
+            cluster_name = f"cluster_{i+1}"
+            writers.write_xyz(
+                mol_cluster, 
+                cluster_name, 
+                zipf=zipf
+            )
+            writers.write_toml(
+                file_name=cluster_name, 
+                zipf=zipf,
+                num_cpus=args.NumCPUs,
+                optlevel=args.CRESTOptLevel,
+                gfn_method=args.CRESTMethod
+            )
+            del mol_cluster
+            gc.collect()
+
+        writers.write_sh(
+            num_jobs=args.NumClusters, 
+            zipf=zipf, 
+            job_name="cluster_calc",
+            num_cpus=args.NumCPUs, 
+            run_time=args.RunTime,
+            email=args.Email
+        )
+    print(f"All clusters generated. Total placement attempts: {total_attempts}")
+
 
 def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
     print("\n----------------------------------------------------------------")
     print("Generating initial CREST input structure:\n")
 
     molecule = Chem.MolFromSmiles(smiles)
-
     molecule_h = Chem.AddHs(molecule)
     Chem.rdCoordGen.AddCoords(molecule_h)
 
@@ -72,8 +138,9 @@ def place_ring(mol, mols, existing_coords, radius, n_mols,
             existing_coords_np = np.array(existing_coords)
 
             if existing_coords_np.shape[0] > 0:
-                dists = np.linalg.norm(existing_coords_np[:, None] - new_coords, axis=2)
-                too_close = np.any(dists < min_dist)
+                tree = scipy.spatial.cKDTree(existing_coords_np)
+                distances, _ = tree.query(new_coords, distance_upper_bound=min_dist)
+                too_close = np.any(distances < min_dist)
             else:
                 too_close = False
 
@@ -89,12 +156,17 @@ def place_ring(mol, mols, existing_coords, radius, n_mols,
 def build_cluster_hex_rings(
     mol, num_rings=1, r_start=6.0, r_step=6.0, min_dist=3, max_attempts=1000, num_ap=0
     ):
-    mols = [mol]
-    existing_coords = list(mol.GetConformer().GetPositions())
+
     total_mols = 3*num_rings**2+3*num_rings+1
     flip_indices = np.sort(
-    np.random.choice(np.arange(1, total_mols), size=min(num_ap, total_mols - 1), replace=False)
+        np.random.choice(np.arange(total_mols), size=min(num_ap, total_mols), replace=False)
     )
+
+    mol0 = Chem.Mol(mol)
+    if 0 in flip_indices:
+        geom_ops.flip_mol(mol0)
+    mols = [mol0]
+    existing_coords = list(mol0.GetConformer().GetPositions())
 
 
     current_index = 1

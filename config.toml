@@ -1,0 +1,12 @@
+[cluster_gen]
+NumLayers = 1
+Output = "clusters.zip"
+NumCPUs = 4
+RunTime = "24:00:00"
+Email = j.l.hobbs@leeds.ac.uk
+NumAP = 0
+MolSep = 6
+MinSep = 2.5
+CRESTOptLevel = "extreme"
+CRESTMethod = "gfn2"
+RDNumConf = 500
