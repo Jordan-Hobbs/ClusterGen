@@ -70,7 +70,7 @@ def write_sh(num_jobs, zipf, job_name, run_time, num_cpus, email):
         "fi"
     )
 
-    crest_sh_text = (
+    sh_text = (
         "#!/bin/bash\n"
         f"#SBATCH --job-name={job_name}\n"
         f"#SBATCH --time={run_time}\n"

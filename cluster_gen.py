@@ -1,6 +1,7 @@
-import zipfile
 import sys
 import gc
+import zipfile
+import multiprocessing
 
 import numpy as np
 import scipy
@@ -13,63 +14,67 @@ import writers
 
 def cluster_gen(args):
     total_attempts = 0
-
     smiles = args.SmilesString
     mol = find_min_conformer(smiles, num_conf=args.RDNumConf)
     mol = geom_ops.orientate_rod(mol)
 
+    task_args = [(args, i, mol) for i in range(args.NumClusters)]
+
+    with multiprocessing.Pool(4) as pool:
+        results = pool.map(generate_single_cluster, task_args)
+
     with zipfile.ZipFile(args.Output, "w") as zipf:
         writers.write_xyz(mol, "molecule", zipf=zipf)
 
-        for i in range(args.NumClusters):
-            print(f"Generating cluster {i+1}...")
-
-            attempts = 0
-            while True:
-                mol_cluster = build_cluster_hex_rings(
-                    mol,
-                    num_rings=args.NumRings,
-                    min_dist=args.MinSep,
-                    r_start=args.MolSep,
-                    r_step=args.MolSep,
-                    num_ap=args.NumAP,
-                )
-                attempts += 1
-                total_attempts += 1
-
-                if mol_cluster is not None:
-                    break
-
-                sys.stdout.write(f"\rCluster {i+1}: {attempts} attempt(s) so far...")
-                sys.stdout.flush()
-
-            print(f"Cluster {i+1} generated after {attempts} attempt(s).")
-
-            cluster_name = f"cluster_{i+1}"
-            writers.write_xyz(
-                mol_cluster, 
-                cluster_name, 
-                zipf=zipf
-            )
+        for cluster_index, mol_cluster in results:
+            cluster_name = f"cluster_{cluster_index + 1}"
+            writers.write_xyz(mol_cluster, cluster_name, zipf=zipf)
             writers.write_toml(
-                file_name=cluster_name, 
+                file_name=cluster_name,
                 zipf=zipf,
                 num_cpus=args.NumCPUs,
                 optlevel=args.CRESTOptLevel,
-                gfn_method=args.CRESTMethod
+                gfn_method=args.CRESTMethod,
             )
             del mol_cluster
             gc.collect()
 
         writers.write_sh(
-            num_jobs=args.NumClusters, 
-            zipf=zipf, 
+            num_jobs=args.NumClusters,
+            zipf=zipf,
             job_name="cluster_calc",
-            num_cpus=args.NumCPUs, 
+            num_cpus=args.NumCPUs,
             run_time=args.RunTime,
-            email=args.Email
+            email=args.Email,
         )
-    print(f"All clusters generated. Total placement attempts: {total_attempts}")
+
+    print(f"\nTotal number of clusters generated: {len(results)}")
+    print(f"Total placement attempts: {total_attempts}")
+
+
+def generate_single_cluster(args_tuple):
+    args, cluster_index, mol = args_tuple
+
+    attempts = 0
+    while True:
+        mol_cluster = build_cluster_hex_rings(
+            mol,
+            num_rings=args.NumRings,
+            min_dist=args.MinSep,
+            r_start=args.MolSep,
+            r_step=args.MolSep,
+            num_ap=args.NumAP,
+        )
+        attempts += 1
+
+        if mol_cluster is not None:
+            break
+
+        sys.stdout.write(f"\rGenerating clusters: {attempts} attempt(s) so far...")
+        sys.stdout.flush()
+
+    print(f"\n{attempts} attempt(s) made for Cluster {cluster_index + 1}.")
+    return cluster_index, mol_cluster
 
 
 def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
@@ -109,6 +114,7 @@ def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
     mol_min = Chem.Mol(molecule_h, False, min_index)
 
     return mol_min
+
 
 def place_ring(mol, mols, existing_coords, radius, n_mols,
                min_dist=2.5, max_attempts=2000, flip_indices=None):
@@ -153,11 +159,11 @@ def place_ring(mol, mols, existing_coords, radius, n_mols,
 
     return True
 
+
 def build_cluster_hex_rings(
     mol, num_rings=1, r_start=6.0, r_step=6.0, min_dist=3, max_attempts=1000, num_ap=0
-    ):
-
-    total_mols = 3*num_rings**2+3*num_rings+1
+):
+    total_mols = 3 * num_rings**2 + 3 * num_rings + 1
     flip_indices = np.sort(
         np.random.choice(np.arange(total_mols), size=min(num_ap, total_mols), replace=False)
     )
@@ -167,7 +173,6 @@ def build_cluster_hex_rings(
         geom_ops.flip_mol(mol0)
     mols = [mol0]
     existing_coords = list(mol0.GetConformer().GetPositions())
-
 
     current_index = 1
     for ring in range(1, num_rings + 1):
