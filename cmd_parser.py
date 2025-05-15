@@ -1,6 +1,7 @@
 import argparse
 import tomllib
 import sys
+import logging
 
 import utils
 
@@ -16,6 +17,11 @@ class ProgramController:
             "-c", "--Config",
             type=str,
             help="Name of the config file used to input required settings."
+        )
+        self.top_parent_parser.add_argument(
+            "-v", "--Verbose",
+            action="store_true",
+            help="Enable verbose output for debugging."
         )
 
         # Create parser and subparsers for input arguments
@@ -148,9 +154,9 @@ class ProgramController:
         try:
             with open(self.args.Config, "rb") as file:
                 config = tomllib.load(file)
-            print("Config file found.")
+            logging.info("Config file found.")
         except FileNotFoundError:
-            print(
+            logging.warning(
                 f"Config file not found. Is \"{self.args.Config}\" a valid "
                 "path? Using default parameters instead."
             )
@@ -181,7 +187,7 @@ class ProgramController:
         for key, value in flat_config.items():
             setattr(self.args, key, value)
 
-        print("Config parameters loaded successfully.")
+        logging.info("Config parameters loaded successfully.")
 
     def _build_short_to_long_map(self, subparser) -> dict:
         """Build a mapping of short flags to long flags."""
@@ -200,4 +206,11 @@ class ProgramController:
     def get_args(self) -> argparse.Namespace:
         """Parse and return command-line arguments."""
         self.args = self.parser.parse_args()
+
+        # Set logging level
+        if getattr(self.args, "Verbose", False):
+            logging.basicConfig(level=logging.DEBUG, format='%(message)s')
+        else:
+            logging.basicConfig(level=logging.INFO, format='%(message)s')
+
         return self.args

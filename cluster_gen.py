@@ -1,16 +1,18 @@
-import sys
 import gc
 import zipfile
 import multiprocessing
+import logging
 
 import numpy as np
 import scipy
+from tqdm import tqdm
 from rdkit import Chem
 from rdkit.Chem import rdDistGeom, rdForceFieldHelpers
 
 import geom_ops
 import writers
 
+logger = logging.getLogger(__name__)
 
 def cluster_gen(args):
     total_attempts = 0
@@ -18,15 +20,25 @@ def cluster_gen(args):
     mol = find_min_conformer(smiles, num_conf=args.RDNumConf)
     mol = geom_ops.orientate_rod(mol)
 
+    logger.info("------------------------------------------------------------")
+    logger.info(f"Generating {args.NumClusters} clusters.")
+
     task_args = [(args, i, mol) for i in range(args.NumClusters)]
+    successful_clusters = 0
+    total_attempts = 0
 
-    with multiprocessing.Pool(4) as pool:
-        results = pool.map(generate_single_cluster, task_args)
+    with multiprocessing.Pool(4) as pool, zipfile.ZipFile(args.Output, "w") as zipf, tqdm(total=args.NumClusters, desc="Clusters generated") as pbar:
+        for cluster_index, mol_data in pool.imap_unordered(generate_single_cluster, task_args):
 
-    with zipfile.ZipFile(args.Output, "w") as zipf:
-        writers.write_xyz(mol, "molecule", zipf=zipf)
+            mol_cluster, attempts = mol_data
+            total_attempts += attempts
+            successful_clusters += 1
+            avg_attempts = total_attempts / successful_clusters
+            pbar.set_postfix({
+                "Total Attempts": total_attempts,
+                "Avg/Cluster": f"{avg_attempts:.2f}"
+            })
 
-        for cluster_index, mol_cluster in results:
             cluster_name = f"cluster_{cluster_index + 1}"
             writers.write_xyz(mol_cluster, cluster_name, zipf=zipf)
             writers.write_toml(
@@ -36,8 +48,12 @@ def cluster_gen(args):
                 optlevel=args.CRESTOptLevel,
                 gfn_method=args.CRESTMethod,
             )
+
             del mol_cluster
             gc.collect()
+            pbar.update(1)
+
+
 
         writers.write_sh(
             num_jobs=args.NumClusters,
@@ -47,48 +63,56 @@ def cluster_gen(args):
             run_time=args.RunTime,
             email=args.Email,
         )
+    logger.info("------------------------------------------------------------")
+    logger.info("Cluster generation complete")
+    logger.info(f"Total number of clusters generated: {successful_clusters}")
+    logger.info(f"Total placement attempts: {total_attempts}")
+    logger.info(f"Average number of attempts: {avg_attempts}")
+    logger.info("------------------------------------------------------------")
+    logger.info("Summary of parameters:")
+    logger.info(f"  SMILES           : {args.SmilesString}")
+    logger.info(f"  Num Clusters     : {args.NumClusters}")
+    logger.info(f"  Rings/Cluster    : {args.NumRings}")
+    logger.info(f"  Layers           : {args.NumLayers or 1}")
+    logger.info(f"  Mol Separation   : {args.MolSep} Å")
+    logger.info(f"  Min Distance     : {args.MinSep} Å")
+    logger.info(f"  Antiparallel mols: {args.NumAP}")
+    logger.info(f"  CREST Method     : {args.CRESTMethod}")
+    logger.info(f"  CREST OptLevel   : {args.CRESTOptLevel}")
 
-    print(f"\nTotal number of clusters generated: {len(results)}")
-    print(f"Total placement attempts: {total_attempts}")
 
 
 def generate_single_cluster(args_tuple):
     args, cluster_index, mol = args_tuple
 
     attempts = 0
-    while True:
-        mol_cluster = build_cluster_hex_rings(
-            mol,
-            num_rings=args.NumRings,
-            min_dist=args.MinSep,
-            r_start=args.MolSep,
-            r_step=args.MolSep,
-            num_ap=args.NumAP,
-        )
-        attempts += 1
-
-        if mol_cluster is not None:
-            break
-
-        sys.stdout.write(f"\rGenerating clusters: {attempts} attempt(s) so far...")
-        sys.stdout.flush()
-
-    print(f"\n{attempts} attempt(s) made for Cluster {cluster_index + 1}.")
-    return cluster_index, mol_cluster
+    try:
+        while True:
+            mol_cluster = build_cluster_rings(
+                mol,
+                num_rings=args.NumRings,
+                min_dist=args.MinSep,
+                r_start=args.MolSep,
+                r_step=args.MolSep,
+                num_ap=args.NumAP,
+            )
+            attempts += 1
+            if mol_cluster is not None:
+                break
+        return cluster_index, (mol_cluster, attempts)
+    except Exception as e:
+        return cluster_index, None
 
 
 def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
-    print("\n----------------------------------------------------------------")
-    print("Generating initial CREST input structure:\n")
+    logger.info("------------------------------------------------------------")
+    logger.info("Generating single molecule structure")
 
     molecule = Chem.MolFromSmiles(smiles)
     molecule_h = Chem.AddHs(molecule)
     Chem.rdCoordGen.AddCoords(molecule_h)
 
-    print(
-        f"Generating {num_conf} conformers for initial sorting and "
-        "optimization using RDKit."
-    )
+    logger.info(f"Generating {num_conf} conformers using RDKit.")
     rdDistGeom.EmbedMultipleConfs(
         molecule_h,
         num_conf,
@@ -101,9 +125,9 @@ def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
     )
 
     if all(conf_set[0] == 0 for conf_set in conf_energy):
-        print("All conformers converged.")
+        logger.info("All conformers converged.")
     else:
-        print("WARNING! Not all conformers converged.")
+        logger.warning("Not all conformers converged.")
 
     min_energy = float("inf")
     min_index = 0
@@ -113,11 +137,12 @@ def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
             min_index = index
     mol_min = Chem.Mol(molecule_h, False, min_index)
 
+    logger.info(f"Selected conformer {min_index} with energy {min_energy:.2f}")
     return mol_min
 
 
 def place_ring(mol, mols, existing_coords, radius, n_mols,
-               min_dist=2.5, max_attempts=2000, flip_indices=None):
+               min_dist=2.5, max_attempts=1000, flip_indices=None):
 
     if flip_indices is None:
         flip_indices = []
@@ -156,11 +181,11 @@ def place_ring(mol, mols, existing_coords, radius, n_mols,
                 break
         else:
             return False
-
+        
     return True
 
 
-def build_cluster_hex_rings(
+def build_cluster_rings(
     mol, num_rings=1, r_start=6.0, r_step=6.0, min_dist=3, max_attempts=1000, num_ap=0
 ):
     total_mols = 3 * num_rings**2 + 3 * num_rings + 1
