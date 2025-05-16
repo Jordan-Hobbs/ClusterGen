@@ -2,6 +2,7 @@ import gc
 import zipfile
 import multiprocessing
 import logging
+import time
 
 import numpy as np
 import scipy
@@ -15,32 +16,36 @@ import writers
 logger = logging.getLogger(__name__)
 
 def cluster_gen(args):
-    total_attempts = 0
     smiles = args.SmilesString
+    logger.info("------------------------------------------------------------")
+    logger.info(f"Generating single molecule via RDKit from {args.RDNumConf} conformers")    
+    start_rdkit = time.time()
     mol = find_min_conformer(smiles, num_conf=args.RDNumConf)
     mol = geom_ops.orientate_rod(mol)
+    end_rdkit = time.time()
+    rdkit_duration = end_rdkit - start_rdkit
 
     logger.info("------------------------------------------------------------")
     logger.info(f"Generating {args.NumClusters} clusters.")
 
     task_args = [(args, i, mol) for i in range(args.NumClusters)]
-    total_attempts = 0
+
     successful_clusters = 0
+    total_build_attempts = 0
+    
 
     with multiprocessing.Pool(4) as pool, zipfile.ZipFile(args.Output, "w") as zipf, tqdm(total=args.NumClusters, desc="Clusters generated") as pbar:
-        for cluster_index, mol_data in pool.imap_unordered(generate_single_cluster, task_args):
-            if mol_data is None:
-                continue
-
-            mol_cluster, cluster_attempts = mol_data
-            total_attempts += cluster_attempts
+        start_cluster = time.time()
+        for cluster_index, mol_cluster, build_attempts in pool.imap_unordered(generate_single_cluster, task_args):
+            total_build_attempts += build_attempts
             successful_clusters += 1
-            avg_attempts = total_attempts / successful_clusters
 
-            # Update one clean status line below progress bar
+            elapsed = time.time() - start_cluster
+            avg_time = elapsed / successful_clusters
+            avg_attempts =  total_build_attempts / successful_clusters
             pbar.set_postfix({
-                "Cluster Attempts": total_attempts,
-                "Avg/Cluster": f"{avg_attempts:.2f}"
+                "Avg time": f"{avg_time:.2f}s",
+                "Avg attempts": f"{avg_attempts:.2f}"
             })
 
             cluster_name = f"cluster_{cluster_index + 1}"
@@ -65,13 +70,20 @@ def cluster_gen(args):
             run_time=args.RunTime,
             email=args.Email,
         )
-    logger.info("------------------------------------------------------------")
+
+    end_cluster = time.time()
+    cluster_duration = end_cluster - start_cluster
+
     logger.info("Cluster generation complete")
-    logger.info(f"Total number of clusters generated: {successful_clusters}")
-    logger.info(f"Total placement attempts: {total_attempts}")
-    logger.info(f"Average number of attempts: {avg_attempts}")
     logger.info("------------------------------------------------------------")
-    logger.info("Summary of parameters:")
+    logger.info("Generation timings:")    
+    logger.info(f"  Clusters successfully generated: {successful_clusters}")
+    logger.info(f"  Total cluster build attempts   : {total_build_attempts}")
+    logger.info(f"  Average attempts per success   : {total_build_attempts / successful_clusters:.3f}")
+    logger.info(f"  RDKit conformer generation time: {rdkit_duration:.2f}s")
+    logger.info(f"  Cluster generation time        : {cluster_duration:.2f}s")
+    logger.info("------------------------------------------------------------")
+    logger.info("Generation parameters:")
     logger.info(f"  SMILES           : {args.SmilesString}")
     logger.info(f"  Num Clusters     : {args.NumClusters}")
     logger.info(f"  Rings/Cluster    : {args.NumRings}")
@@ -84,38 +96,32 @@ def cluster_gen(args):
 
 
 
+
 def generate_single_cluster(args_tuple):
     args, cluster_index, mol = args_tuple
 
-    cluster_attempts = 0
-    try:
-        while True:
-            cluster_attempts += 1
-            mol_cluster, _ = build_cluster_rings(
-                mol,
-                num_rings=args.NumRings,
-                min_dist=args.MinSep,
-                r_start=args.MolSep,
-                r_step=args.MolSep,
-                num_ap=args.NumAP,
-            )
-            if mol_cluster is not None:
-                return cluster_index, (mol_cluster, cluster_attempts)
-    except Exception:
-        return cluster_index, None
-
+    build_attempts = 0
+    while True:
+        build_attempts += 1
+        mol_cluster = build_cluster_rings(
+            mol,
+            num_rings=args.NumRings,
+            min_dist=args.MinSep,
+            r_start=args.MolSep,
+            r_step=args.MolSep,
+            num_ap=args.NumAP,
+        )
+        if mol_cluster is not None:
+            return cluster_index, mol_cluster, build_attempts
 
 
 
 def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
-    logger.info("------------------------------------------------------------")
-    logger.info("Generating single molecule structure")
 
     molecule = Chem.MolFromSmiles(smiles)
     molecule_h = Chem.AddHs(molecule)
     Chem.rdCoordGen.AddCoords(molecule_h)
 
-    logger.info(f"Generating {num_conf} conformers using RDKit.")
     rdDistGeom.EmbedMultipleConfs(
         molecule_h,
         num_conf,
@@ -124,7 +130,8 @@ def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
     conf_energy = rdForceFieldHelpers.MMFFOptimizeMoleculeConfs(
         molecule_h,
         maxIters=max_opt_iters,
-        ignoreInterfragInteractions=False
+        ignoreInterfragInteractions=False, 
+        numThreads=4
     )
 
     if all(conf_set[0] == 0 for conf_set in conf_energy):
@@ -143,17 +150,20 @@ def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
     logger.info(f"Selected conformer {min_index} with energy {min_energy:.2f}")
     return mol_min
 
-
 def place_single_ring(mol, mols, existing_coords, radius, n_mols,
-               min_dist=2.5, max_attempts=1000, flip_indices=None):
+                      min_dist=2.5, max_attempts=1000, flip_indices=None):
 
-    total_ring_attempts = 0
     if flip_indices is None:
         flip_indices = []
+    existing_coords_np = np.array(existing_coords)
+    if existing_coords_np.shape[0] > 0:
+        tree = scipy.spatial.cKDTree(existing_coords_np)
+    else:
+        tree = None
 
     for i in range(n_mols):
+        placed = False
         for _ in range(max_attempts):
-            total_ring_attempts += 1
             angle_deg = (i * 360 / n_mols)
             angle_rad = np.radians(angle_deg)
 
@@ -171,10 +181,8 @@ def place_single_ring(mol, mols, existing_coords, radius, n_mols,
             geom_ops.translate_mol(mol_copy, dx=dx, dy=dy, dz=dz)
 
             new_coords = np.array(mol_copy.GetConformer().GetPositions())
-            existing_coords_np = np.array(existing_coords)
 
-            if existing_coords_np.shape[0] > 0:
-                tree = scipy.spatial.cKDTree(existing_coords_np)
+            if tree is not None:
                 distances, _ = tree.query(new_coords, distance_upper_bound=min_dist)
                 too_close = np.any(distances < min_dist)
             else:
@@ -183,11 +191,17 @@ def place_single_ring(mol, mols, existing_coords, radius, n_mols,
             if not too_close:
                 mols.append(mol_copy)
                 existing_coords.extend(new_coords)
+                existing_coords_np = np.array(existing_coords)
+                tree = scipy.spatial.cKDTree(existing_coords_np)
+
+                placed = True
                 break
-        else:
-            return False, total_ring_attempts
-        
-    return True, total_ring_attempts
+
+        if not placed:
+            return False
+
+    return True
+
 
 
 def build_cluster_rings(
@@ -204,7 +218,7 @@ def build_cluster_rings(
     mols = [mol0]
     existing_coords = list(mol0.GetConformer().GetPositions())
 
-    total_attempts = 0
+
     current_index = 1
     for ring in range(1, num_rings + 1):
         n_mols = 6 * ring
@@ -212,14 +226,13 @@ def build_cluster_rings(
 
         ring_flip_indices = [i - current_index for i in flip_indices if current_index <= i < current_index + n_mols]
 
-        success, ring_attempts = place_single_ring(
+        success = place_single_ring(
             mol, mols, existing_coords, radius, n_mols,
             min_dist=min_dist, max_attempts=max_attempts,
             flip_indices=ring_flip_indices
         )
-        total_attempts += ring_attempts
         if not success:
-            return None, total_attempts
+            return None
 
         current_index += n_mols
 
@@ -227,4 +240,4 @@ def build_cluster_rings(
     for m in mols[1:]:
         combined = Chem.CombineMols(combined, m)
 
-    return combined,total_attempts
+    return combined
