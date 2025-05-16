@@ -116,39 +116,43 @@ def generate_single_cluster(args_tuple):
 
 
 
-def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
-
-    molecule = Chem.MolFromSmiles(smiles)
-    molecule_h = Chem.AddHs(molecule)
-    Chem.rdCoordGen.AddCoords(molecule_h)
-
-    rdDistGeom.EmbedMultipleConfs(
-        molecule_h,
-        num_conf,
-        params=rdDistGeom.ETKDGv3()
-    )
-    conf_energy = rdForceFieldHelpers.MMFFOptimizeMoleculeConfs(
-        molecule_h,
-        maxIters=max_opt_iters,
-        ignoreInterfragInteractions=False, 
-        numThreads=4
+def build_cluster_rings(
+    mol, num_rings=1, r_start=6.0, r_step=6.0, min_dist=3, max_attempts=1000, num_ap=0
+):
+    total_mols = 3 * num_rings**2 + 3 * num_rings + 1
+    flip_indices = np.sort(
+        np.random.choice(np.arange(total_mols), size=min(num_ap, total_mols), replace=False)
     )
 
-    if all(conf_set[0] == 0 for conf_set in conf_energy):
-        logger.info("All conformers converged.")
-    else:
-        logger.warning("Not all conformers converged.")
+    mol0 = Chem.Mol(mol)
+    if 0 in flip_indices:
+        geom_ops.flip_mol(mol0)
+    mols = [mol0]
+    existing_coords = list(mol0.GetConformer().GetPositions())
 
-    min_energy = float("inf")
-    min_index = 0
-    for index, (_, energy) in enumerate(conf_energy):
-        if energy < min_energy:
-            min_energy = energy
-            min_index = index
-    mol_min = Chem.Mol(molecule_h, False, min_index)
 
-    logger.info(f"Selected conformer {min_index} with energy {min_energy:.2f}")
-    return mol_min
+    current_index = 1
+    for ring in range(1, num_rings + 1):
+        n_mols = 6 * ring
+        radius = r_start + (ring - 1) * r_step
+
+        ring_flip_indices = [i - current_index for i in flip_indices if current_index <= i < current_index + n_mols]
+
+        success = place_single_ring(
+            mol, mols, existing_coords, radius, n_mols,
+            min_dist=min_dist, max_attempts=max_attempts,
+            flip_indices=ring_flip_indices
+        )
+        if not success:
+            return None
+
+        current_index += n_mols
+
+    combined = mols[0]
+    for m in mols[1:]:
+        combined = Chem.CombineMols(combined, m)
+
+    return combined
 
 def place_single_ring(mol, mols, existing_coords, radius, n_mols,
                       min_dist=2.5, max_attempts=1000, flip_indices=None):
@@ -202,42 +206,36 @@ def place_single_ring(mol, mols, existing_coords, radius, n_mols,
 
     return True
 
+def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
 
+    molecule = Chem.MolFromSmiles(smiles)
+    molecule_h = Chem.AddHs(molecule)
+    Chem.rdCoordGen.AddCoords(molecule_h)
 
-def build_cluster_rings(
-    mol, num_rings=1, r_start=6.0, r_step=6.0, min_dist=3, max_attempts=1000, num_ap=0
-):
-    total_mols = 3 * num_rings**2 + 3 * num_rings + 1
-    flip_indices = np.sort(
-        np.random.choice(np.arange(total_mols), size=min(num_ap, total_mols), replace=False)
+    rdDistGeom.EmbedMultipleConfs(
+        molecule_h,
+        num_conf,
+        params=rdDistGeom.ETKDGv3()
+    )
+    conf_energy = rdForceFieldHelpers.MMFFOptimizeMoleculeConfs(
+        molecule_h,
+        maxIters=max_opt_iters,
+        ignoreInterfragInteractions=False, 
+        numThreads=4
     )
 
-    mol0 = Chem.Mol(mol)
-    if 0 in flip_indices:
-        geom_ops.flip_mol(mol0)
-    mols = [mol0]
-    existing_coords = list(mol0.GetConformer().GetPositions())
+    if all(conf_set[0] == 0 for conf_set in conf_energy):
+        logger.info("All conformers converged.")
+    else:
+        logger.warning("Not all conformers converged.")
 
+    min_energy = float("inf")
+    min_index = 0
+    for index, (_, energy) in enumerate(conf_energy):
+        if energy < min_energy:
+            min_energy = energy
+            min_index = index
+    mol_min = Chem.Mol(molecule_h, False, min_index)
 
-    current_index = 1
-    for ring in range(1, num_rings + 1):
-        n_mols = 6 * ring
-        radius = r_start + (ring - 1) * r_step
-
-        ring_flip_indices = [i - current_index for i in flip_indices if current_index <= i < current_index + n_mols]
-
-        success = place_single_ring(
-            mol, mols, existing_coords, radius, n_mols,
-            min_dist=min_dist, max_attempts=max_attempts,
-            flip_indices=ring_flip_indices
-        )
-        if not success:
-            return None
-
-        current_index += n_mols
-
-    combined = mols[0]
-    for m in mols[1:]:
-        combined = Chem.CombineMols(combined, m)
-
-    return combined
+    logger.info(f"Selected conformer {min_index} with energy {min_energy:.2f}")
+    return mol_min
