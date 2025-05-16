@@ -24,18 +24,22 @@ def cluster_gen(args):
     logger.info(f"Generating {args.NumClusters} clusters.")
 
     task_args = [(args, i, mol) for i in range(args.NumClusters)]
-    successful_clusters = 0
     total_attempts = 0
+    successful_clusters = 0
 
     with multiprocessing.Pool(4) as pool, zipfile.ZipFile(args.Output, "w") as zipf, tqdm(total=args.NumClusters, desc="Clusters generated") as pbar:
         for cluster_index, mol_data in pool.imap_unordered(generate_single_cluster, task_args):
+            if mol_data is None:
+                continue
 
-            mol_cluster, attempts = mol_data
-            total_attempts += attempts
+            mol_cluster, cluster_attempts = mol_data
+            total_attempts += cluster_attempts
             successful_clusters += 1
             avg_attempts = total_attempts / successful_clusters
+
+            # Update one clean status line below progress bar
             pbar.set_postfix({
-                "Total Attempts": total_attempts,
+                "Cluster Attempts": total_attempts,
                 "Avg/Cluster": f"{avg_attempts:.2f}"
             })
 
@@ -52,8 +56,6 @@ def cluster_gen(args):
             del mol_cluster
             gc.collect()
             pbar.update(1)
-
-
 
         writers.write_sh(
             num_jobs=args.NumClusters,
@@ -85,10 +87,11 @@ def cluster_gen(args):
 def generate_single_cluster(args_tuple):
     args, cluster_index, mol = args_tuple
 
-    attempts = 0
+    cluster_attempts = 0
     try:
         while True:
-            mol_cluster = build_cluster_rings(
+            cluster_attempts += 1
+            mol_cluster, _ = build_cluster_rings(
                 mol,
                 num_rings=args.NumRings,
                 min_dist=args.MinSep,
@@ -96,12 +99,12 @@ def generate_single_cluster(args_tuple):
                 r_step=args.MolSep,
                 num_ap=args.NumAP,
             )
-            attempts += 1
             if mol_cluster is not None:
-                break
-        return cluster_index, (mol_cluster, attempts)
-    except Exception as e:
+                return cluster_index, (mol_cluster, cluster_attempts)
+    except Exception:
         return cluster_index, None
+
+
 
 
 def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
@@ -141,14 +144,16 @@ def find_min_conformer(smiles, num_conf: int = 100, max_opt_iters: int = 1000):
     return mol_min
 
 
-def place_ring(mol, mols, existing_coords, radius, n_mols,
+def place_single_ring(mol, mols, existing_coords, radius, n_mols,
                min_dist=2.5, max_attempts=1000, flip_indices=None):
 
+    total_ring_attempts = 0
     if flip_indices is None:
         flip_indices = []
 
     for i in range(n_mols):
-        for attempt in range(max_attempts):
+        for _ in range(max_attempts):
+            total_ring_attempts += 1
             angle_deg = (i * 360 / n_mols)
             angle_rad = np.radians(angle_deg)
 
@@ -180,9 +185,9 @@ def place_ring(mol, mols, existing_coords, radius, n_mols,
                 existing_coords.extend(new_coords)
                 break
         else:
-            return False
+            return False, total_ring_attempts
         
-    return True
+    return True, total_ring_attempts
 
 
 def build_cluster_rings(
@@ -199,6 +204,7 @@ def build_cluster_rings(
     mols = [mol0]
     existing_coords = list(mol0.GetConformer().GetPositions())
 
+    total_attempts = 0
     current_index = 1
     for ring in range(1, num_rings + 1):
         n_mols = 6 * ring
@@ -206,12 +212,14 @@ def build_cluster_rings(
 
         ring_flip_indices = [i - current_index for i in flip_indices if current_index <= i < current_index + n_mols]
 
-        if not place_ring(
+        success, ring_attempts = place_single_ring(
             mol, mols, existing_coords, radius, n_mols,
             min_dist=min_dist, max_attempts=max_attempts,
             flip_indices=ring_flip_indices
-        ):
-            return None
+        )
+        total_attempts += ring_attempts
+        if not success:
+            return None, total_attempts
 
         current_index += n_mols
 
@@ -219,4 +227,4 @@ def build_cluster_rings(
     for m in mols[1:]:
         combined = Chem.CombineMols(combined, m)
 
-    return combined
+    return combined,total_attempts
