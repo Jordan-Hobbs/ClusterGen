@@ -27,7 +27,22 @@ def write_toml(file_name, zipf, num_cpus, optlevel, gfn_method):
         "[[calculation.level]]\n"
         f"method = \"{gfn_method}\""
     )
-    zipf.writestr(f"{file_name}.toml", toml_text)
+    zipf.writestr(f"{file_name}_stage1.toml", toml_text)
+
+def write_toml2(file_name, zipf, num_cpus, optlevel, gfn_method):
+    toml_text = (
+        "# CREST 3 input file\n"
+        f"input = \"crestopt.xyz\"\n"
+        "runtype = \"ancopt\"\n"
+        f"threads = {num_cpus}\n"
+        "\n"
+        "[calculation]\n"
+        f"optlev = \"{optlevel}\"\n"
+        "\n"
+        "[[calculation.level]]\n"
+        f"method = \"{gfn_method}\""
+    )
+    zipf.writestr(f"{file_name}_stage2.toml", toml_text)
 
 def write_sh(num_jobs, zipf, job_name, run_time, num_cpus, email):
     sh_text = (
@@ -46,30 +61,35 @@ def write_sh(num_jobs, zipf, job_name, run_time, num_cpus, email):
         "# Make directories\n"
         "mkdir -p opt_clusters\n"
         "mkdir -p cluster_job_${SLURM_ARRAY_TASK_ID}\n"
-        ""
         "cd cluster_job_${SLURM_ARRAY_TASK_ID}\n"
-        ""
-        "# Copy input files\n"
-        "cp \"../cluster_${SLURM_ARRAY_TASK_ID}.toml\" \"../cluster_${SLURM_ARRAY_TASK_ID}.xyz\" .\n"
         "\n"
-        "# Run calculation\n"
-        "crest cluster_${SLURM_ARRAY_TASK_ID}.toml > cluster_${SLURM_ARRAY_TASK_ID}.out\n"
+        "# Copy stage 1 input files\n"
+        "cp \"../cluster_${SLURM_ARRAY_TASK_ID}_stage1.toml\" \"../cluster_${SLURM_ARRAY_TASK_ID}.xyz\" .\n"
+        "\n"
+        "# Run stage 1\n"
+        "crest cluster_${SLURM_ARRAY_TASK_ID}_stage1.toml > stage1.out\n"
         "wait\n"
         "\n"
-        "# Handle copying outputs\n"
-        "\n"
-        "# 1. Copy and rename crestopt.xyz\n"
+        "# Save output\n"
         "if [ -f \"crestopt.xyz\" ]; then\n"
-        "    cp \"crestopt.xyz\" \"../opt_clusters/opt_cluster_${SLURM_ARRAY_TASK_ID}.xyz\"\n"
+        "    cp \"crestopt.xyz\" \"../opt_clusters/opt_cluster_${SLURM_ARRAY_TASK_ID}_stage1.xyz\"\n"
         "fi\n"
+        "cp stage1.out \"../opt_clusters/opt_cluster_${SLURM_ARRAY_TASK_ID}_stage1.out\"\n"
         "\n"
-        "# 2. Copy .out file without renaming\n"
-        "if [ -f \"cluster_${SLURM_ARRAY_TASK_ID}.out\" ]; then\n"
-        "    cp \"cluster_${SLURM_ARRAY_TASK_ID}.out\" \"../opt_clusters/opt_cluster_${SLURM_ARRAY_TASK_ID}.out\"\n"
+        "# Check and run stage 2\n"
+        "if [ -f \"../cluster_${SLURM_ARRAY_TASK_ID}_stage2.toml\" ]; then\n"
+        "    cp \"../cluster_${SLURM_ARRAY_TASK_ID}_stage2.toml\" .\n"
+        "    cp crestopt.xyz input.xyz\n"
+        "    crest cluster_${SLURM_ARRAY_TASK_ID}_stage2.toml > stage2.out\n"
+        "    wait\n"
+        "    if [ -f \"crestopt.xyz\" ]; then\n"
+        "        cp \"crestopt.xyz\" \"../opt_clusters/opt_cluster_${SLURM_ARRAY_TASK_ID}_stage2.xyz\"\n"
+        "    fi\n"
+        "    cp stage2.out \"../opt_clusters/opt_cluster_${SLURM_ARRAY_TASK_ID}_stage2.out\"\n"
         "fi\n"
         "\n"
         "cd ..\n"
         "rm -rf cluster_job_${SLURM_ARRAY_TASK_ID}\n"
-        "rm -f cluster_${SLURM_ARRAY_TASK_ID}.toml cluster_${SLURM_ARRAY_TASK_ID}.xyz"
+        "rm -f cluster_${SLURM_ARRAY_TASK_ID}.xyz cluster_${SLURM_ARRAY_TASK_ID}_stage1.toml cluster_${SLURM_ARRAY_TASK_ID}_stage2.toml"
     )
     zipf.writestr(f"{job_name}.sh", sh_text)

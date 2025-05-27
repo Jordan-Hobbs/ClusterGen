@@ -8,5 +8,6 @@ NumAP = 3
 MolSep = 6
 MinSep = 2.5
 CRESTOptLevel = "normal"
-CRESTMethod = "gfn2"
+CRESTMethod = "gfnff"
+CRESTMethod2 = "gfn2"
 RDNumConf = 500

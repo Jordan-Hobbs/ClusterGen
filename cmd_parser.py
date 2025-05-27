@@ -142,6 +142,15 @@ class ProgramController:
             )
         )
         self.cluster_gen.add_argument(
+            "-cmt", "--CRESTMethod2",
+            type=str,
+            choices=["gfnff", "gfn0", "gfn1", "gfn2"],
+            help=(
+                "Tight binding method used by CREST for optimisation and "
+                "conformer searching. Applys to a second optimisation stage."
+            )
+        )
+        self.cluster_gen.add_argument(
             "-rn", "--RDNumConf",
             type=int,
             default=100,

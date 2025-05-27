@@ -57,7 +57,14 @@ def cluster_gen(args):
                 optlevel=args.CRESTOptLevel,
                 gfn_method=args.CRESTMethod,
             )
-
+            if args.CRESTMethod2:
+                writers.write_toml2(
+                    file_name=cluster_name,
+                    zipf=zipf,
+                    num_cpus=args.NumCPUs,
+                    optlevel=args.CRESTOptLevel,
+                    gfn_method=args.CRESTMethod2,
+                )
             del mol_cluster
             gc.collect()
             pbar.update(1)
